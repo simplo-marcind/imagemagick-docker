@@ -10,7 +10,8 @@
 #      na tymczasowym kontenerze (osobny port testowy),
 #   4. gdy testy przejdą - obraz dostaje tagi :latest oraz :im-<wersja ImageMagick>,
 #      a kontener produkcyjny jest podmieniany i wystawiany na porcie HTTP 3100
-#      (poprzedni obraz zostaje pod tagiem :previous),
+#      (poprzedni obraz zostaje pod tagiem :previous); opcjonalnie kontener dostaje
+#      stały adres IP w sieci dockerowej (--ip),
 #   5. gdy nowy kontener nie wstanie - automatyczny rollback do poprzedniego obrazu.
 #
 # Gdy build/testy/wdrożenie się nie powiodą, Dockerfile.trixie wraca do poprzedniej zawartości,
@@ -36,6 +37,13 @@ Opcje:
   -i, --image-name NAZWA       Nazwa obrazu (bez tagu). Domyślnie: imagemagick-trixie
   -c, --container-name NAZWA   Nazwa kontenera produkcyjnego. Domyślnie: imagemagick-trixie
   -w, --startup-timeout SEK    Czas oczekiwania na start kontenera produkcyjnego. Domyślnie: 30
+      --ip ADRES               Stały adres IPv4 kontenera produkcyjnego (np. 172.30.0.10).
+                                Wymaga własnej sieci dockerowej (domyślna sieć bridge nie
+                                obsługuje stałych adresów) - patrz --network i --subnet.
+  -n, --network NAZWA          Nazwa sieci dockerowej kontenera produkcyjnego. Domyślnie:
+                                imagemagick-net (gdy podano --ip), w przeciwnym razie sieć domyślna.
+      --subnet CIDR            Podsieć (np. 172.30.0.0/24) używana do utworzenia sieci,
+                                jeśli ta jeszcze nie istnieje. Wymagana tylko wtedy.
   -f, --force                  Buduje, testuje i wdraża nawet bez nowych wersji
                                 oraz ponawia zestaw wersji, który wcześniej zawiódł.
   -h, --help                   Wyświetla tę pomoc
@@ -55,6 +63,9 @@ TEST_PORT=18080
 IMAGE_NAME='imagemagick-trixie'
 CONTAINER_NAME='imagemagick-trixie'
 STARTUP_TIMEOUT=30
+CONTAINER_IP=''
+NETWORK_NAME=''
+SUBNET=''
 FORCE=0
 
 # Cron ma minimalny PATH - docker/git/curl zwykle leżą w /usr/local/bin.
@@ -62,7 +73,7 @@ export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -p|--host-port|-t|--test-port|-i|--image-name|-c|--container-name|-w|--startup-timeout)
+        -p|--host-port|-t|--test-port|-i|--image-name|-c|--container-name|-w|--startup-timeout|--ip|-n|--network|--subnet)
             [ $# -ge 2 ] || { echo "Opcja $1 wymaga wartości." >&2; exit 2; }
             case "$1" in
                 -p|--host-port)       HOST_PORT="$2" ;;
@@ -70,6 +81,9 @@ while [ $# -gt 0 ]; do
                 -i|--image-name)      IMAGE_NAME="$2" ;;
                 -c|--container-name)  CONTAINER_NAME="$2" ;;
                 -w|--startup-timeout) STARTUP_TIMEOUT="$2" ;;
+                --ip)                 CONTAINER_IP="$2" ;;
+                -n|--network)         NETWORK_NAME="$2" ;;
+                --subnet)             SUBNET="$2" ;;
             esac
             shift 2 ;;
         -f|--force) FORCE=1; shift ;;
@@ -83,6 +97,21 @@ for v in HOST_PORT TEST_PORT STARTUP_TIMEOUT; do
         ''|*[!0-9]*) echo "$v musi być liczbą." >&2; exit 2 ;;
     esac
 done
+
+if [ -n "$CONTAINER_IP" ]; then
+    if [[ ! "$CONTAINER_IP" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] \
+        || [ "${BASH_REMATCH[1]}" -gt 255 ] || [ "${BASH_REMATCH[2]}" -gt 255 ] \
+        || [ "${BASH_REMATCH[3]}" -gt 255 ] || [ "${BASH_REMATCH[4]}" -gt 255 ]; then
+        echo "--ip musi być poprawnym adresem IPv4 (otrzymano: $CONTAINER_IP)." >&2
+        exit 2
+    fi
+    [ -n "$NETWORK_NAME" ] || NETWORK_NAME='imagemagick-net'
+fi
+
+if [ -n "$SUBNET" ] && [[ ! "$SUBNET" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]; then
+    echo "--subnet musi mieć postać CIDR, np. 172.30.0.0/24 (otrzymano: $SUBNET)." >&2
+    exit 2
+fi
 
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -100,6 +129,17 @@ mkdir -p "$STATE_DIR" || { log "BŁĄD: nie można utworzyć $STATE_DIR"; exit 1
 # Tylko jedna instancja naraz (build potrafi trwać dłużej niż odstęp między uruchomieniami crona).
 exec 9>"$STATE_DIR/lock"
 flock -n 9 || { log 'Poprzednie uruchomienie nadal trwa - pomijam.'; exit 0; }
+
+# Własna sieć dockerowa (potrzebna do stałego IP) - tworzona, jeśli jeszcze nie istnieje.
+if [ -n "$NETWORK_NAME" ] && ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+    if [ -z "$SUBNET" ]; then
+        log "BŁĄD: sieć '$NETWORK_NAME' nie istnieje - podaj --subnet, aby ją utworzyć."
+        exit 1
+    fi
+    log "Tworzę sieć dockerową '$NETWORK_NAME' ($SUBNET)..."
+    docker network create --subnet "$SUBNET" "$NETWORK_NAME" >/dev/null \
+        || { log "BŁĄD: nie udało się utworzyć sieci '$NETWORK_NAME'."; exit 1; }
+fi
 
 BACKUP="$STATE_DIR/Dockerfile.trixie.bak"
 FAILED_FILE="$STATE_DIR/failed-versions"
@@ -123,9 +163,13 @@ versions_signature() {
 }
 
 run_container() {
+    local net_args=()
+    [ -z "$NETWORK_NAME" ] || net_args+=(--network "$NETWORK_NAME")
+    [ -z "$CONTAINER_IP" ] || net_args+=(--ip "$CONTAINER_IP")
+
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1
     docker run -d --name "$CONTAINER_NAME" --restart unless-stopped \
-        -p "${HOST_PORT}:80" "$LATEST_REF" >/dev/null
+        ${net_args[@]+"${net_args[@]}"} -p "${HOST_PORT}:80" "$LATEST_REF" >/dev/null
 }
 
 wait_for_container() {
@@ -205,7 +249,7 @@ docker tag "$CANDIDATE_REF" "$LATEST_REF" || fail "nie udało się otagować $LA
 [ -z "$IM_VERSION" ] || docker tag "$CANDIDATE_REF" "$IMAGE_NAME:im-$IM_VERSION"
 docker image rm "$CANDIDATE_REF" >/dev/null 2>&1
 
-log "Uruchamiam kontener '$CONTAINER_NAME' na porcie $HOST_PORT..."
+log "Uruchamiam kontener '$CONTAINER_NAME' na porcie $HOST_PORT${CONTAINER_IP:+ (IP $CONTAINER_IP w sieci $NETWORK_NAME)}..."
 if run_container && wait_for_container; then
     log "Wdrożono: http://localhost:$HOST_PORT/ (ImageMagick ${IM_VERSION:-?})."
     rm -f "$FAILED_FILE"
