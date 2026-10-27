@@ -5,7 +5,8 @@
 # Kroki:
 #   1. update-library-versions.sh podmienia wersje ARG w Dockerfile.trixie na najnowsze wydania
 #      (ImageMagick, libheif, libaom, libwebp, libjxl),
-#   2. jeśli nic się nie zmieniło (i obraz już istnieje) - koniec,
+#   2. jeśli nic się nie zmieniło (i obraz już istnieje) - koniec; jeśli jednak nie ma
+#      kontenera produkcyjnego, stawiany jest świeży z istniejącego obrazu :latest,
 #   3. test-trixie-image.sh buduje obraz kandydujący (tag :candidate) i testuje go
 #      na tymczasowym kontenerze (osobny port testowy),
 #   4. gdy testy przejdą - obraz dostaje tagi :latest oraz :im-<wersja ImageMagick>,
@@ -184,6 +185,23 @@ wait_for_container() {
     return 1
 }
 
+# Gdy nie ma kontenera produkcyjnego, a obraz :latest istnieje - stawia świeży kontener
+# z tego obrazu (bez budowania). Zwraca 0, gdy kontener istnieje lub został uruchomiony.
+ensure_container() {
+    docker image inspect "$LATEST_REF" >/dev/null 2>&1 || return 0
+    docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1 && return 0
+
+    log "Brak kontenera '$CONTAINER_NAME' - uruchamiam świeży z obrazu '$LATEST_REF' na porcie $HOST_PORT${CONTAINER_IP:+ (IP $CONTAINER_IP w sieci $NETWORK_NAME)}..."
+    if run_container && wait_for_container; then
+        log "Uruchomiono: http://localhost:$HOST_PORT/."
+        return 0
+    fi
+    log 'BŁĄD: świeży kontener nie wstał poprawnie. Logi:'
+    docker logs --tail 30 "$CONTAINER_NAME" 2>&1 | sed 's/^/    /'
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1
+    return 1
+}
+
 # --- 1. Aktualizacja wersji ---
 log 'Sprawdzam nowe wersje bibliotek...'
 cp "$DOCKERFILE" "$BACKUP" || { log 'BŁĄD: nie można utworzyć kopii Dockerfile.trixie.'; exit 1; }
@@ -201,6 +219,7 @@ if cmp -s "$BACKUP" "$DOCKERFILE"; then
 fi
 
 if [ "$CHANGED" -eq 0 ] && [ "$FORCE" -eq 0 ] && docker image inspect "$LATEST_REF" >/dev/null 2>&1; then
+    ensure_container || exit 1
     log 'Brak nowych wersji - nic do zrobienia.'
     exit 0
 fi
@@ -213,6 +232,7 @@ if [ "$CHANGED" -eq 1 ]; then
 
     if [ "$FORCE" -eq 0 ] && [ -f "$FAILED_FILE" ] && [ "$(cat "$FAILED_FILE")" = "$NEW_SIGNATURE" ]; then
         log 'Ten zestaw wersji już wcześniej zawiódł (build/testy/wdrożenie) - pomijam. Użyj --force, aby ponowić.'
+        ensure_container || exit 1
         exit 0
     fi
 else
