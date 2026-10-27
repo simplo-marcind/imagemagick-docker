@@ -93,23 +93,32 @@ jobs:
           cache-to: type=local,dest=/tmp/.buildx-cache
       - name: Testing Debian trixie Image
         run: |
-          docker run --rm im-trixie -list configure
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.jpg -resize 500 /imgs/test-resize.jpg
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.jpg -resize 500 webp:/imgs/test-jpg.webp
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.jpg -resize 500 avif:/imgs/test-jpg.avif
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.png -resize 100 /imgs/test-resize.png
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.png -resize 100 webp:/imgs/test-png.webp
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.png -resize 100 avif:/imgs/test-png.avif
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.png -resize 100 jxl:/imgs/test-png.jxl
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.pdf /imgs/test-pdf.png
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/jpg-with-metadata.jpg /imgs/jpg-with-metadata.webp
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.gif -coalesce /imgs/test-gif.webp
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.tiff -resize 200 /imgs/test-resize.tiff
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.tiff -resize 200 webp:/imgs/test-tiff.webp
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.tiff -resize 200 avif:/imgs/test-tiff.avif
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.tiff -resize 200 jxl:/imgs/test-tiff.jxl
-          docker run --rm -v $(pwd)/test-images:/imgs im-trixie /imgs/test.jpg -antialias -font DejaVu-Sans -pointsize 20 -gravity Southeast -annotate +15+15 'TEST' /imgs/test-text.jpg
-          docker run --rm im-trixie -list configure | grep DELEGATES | grep "fontconfig freetype heic jbig jng jpeg jxl lcms lzma png ps tiff webp x xml zlib zstd"
+          docker run --rm --entrypoint magick im-trixie -list configure
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.jpg -resize 500 /imgs/test-resize.jpg
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.jpg -resize 500 webp:/imgs/test-jpg.webp
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.jpg -resize 500 avif:/imgs/test-jpg.avif
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.png -resize 100 /imgs/test-resize.png
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.png -resize 100 webp:/imgs/test-png.webp
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.png -resize 100 avif:/imgs/test-png.avif
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.png -resize 100 jxl:/imgs/test-png.jxl
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.pdf /imgs/test-pdf.png
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/jpg-with-metadata.jpg /imgs/jpg-with-metadata.webp
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.gif -coalesce /imgs/test-gif.webp
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.tiff -resize 200 /imgs/test-resize.tiff
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.tiff -resize 200 webp:/imgs/test-tiff.webp
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.tiff -resize 200 avif:/imgs/test-tiff.avif
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.tiff -resize 200 jxl:/imgs/test-tiff.jxl
+          docker run --rm --entrypoint magick -v $(pwd)/test-images:/imgs im-trixie /imgs/test.jpg -antialias -font DejaVu-Sans -pointsize 20 -gravity Southeast -annotate +15+15 'TEST' /imgs/test-text.jpg
+          docker run --rm --entrypoint magick im-trixie -list configure | grep DELEGATES | grep "fontconfig freetype heic jbig jng jpeg jxl lcms lzma png ps tiff webp x xml zlib zstd"
+      - name: Testing Debian trixie JPG converter server
+        run: |
+          docker run -d --rm --name im-trixie-server -p 8080:80 im-trixie
+          sleep 3
+          curl -sf -F file=@test-images/test.png -o test-images/server-png.jpg http://localhost:8080/convert
+          curl -sf -F file=@test-images/test.tiff -o test-images/server-tiff.jpg http://localhost:8080/convert
+          curl -sf -F file=@test-images/test.pdf -o test-images/server-pdf.jpg http://localhost:8080/convert
+          file test-images/server-*.jpg | grep -c "JPEG image data" | grep -x 3
+          docker stop im-trixie-server
       - name: Upload Test Results
         uses: actions/upload-artifact@v6
         with:

@@ -1,0 +1,11 @@
+<policymap>
+  <!-- The server converts untrusted uploads: limit resources and disable coders that can read local files or the network. -->
+  <policy domain="resource" name="memory" value="512MiB"/>
+  <policy domain="resource" name="map" value="1GiB"/>
+  <policy domain="resource" name="disk" value="2GiB"/>
+  <policy domain="resource" name="time" value="100"/>
+  <policy domain="resource" name="width" value="32KP"/>
+  <policy domain="resource" name="height" value="32KP"/>
+  <policy domain="coder" rights="none" pattern="{MVG,MSL,EPHEMERAL,URL,HTTP,HTTPS,FTP,TEXT,LABEL,CAPTION,PANGO,INLINE}"/>
+  <policy domain="path" rights="none" pattern="@*"/>
+</policymap>
